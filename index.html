@@ -4,8 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Canopy-aware LOS check (PoC)</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.js"></script>
 <style>
+ #map{height:340px;border-radius:8px;margin-top:12px;border:1px solid #ddd}
+ #legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12px;color:#444;margin:6px 2px 0}
+ #legend i{display:inline-block;width:14px;height:10px;margin-right:5px;vertical-align:middle;border-radius:2px}
  body{font:15px/1.5 system-ui,sans-serif;max-width:900px;margin:0 auto;padding:16px;color:#222}
  h1{font-size:20px;margin:0 0 4px} .sub{color:#666;margin-bottom:16px}
  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
@@ -29,11 +34,14 @@
  <div><label>Frequency (GHz)</label><input id="freq" type="number" step="0.1" value="5.8"></div>
  <div><label>Canopy tile URL ({qk} = quadkey)</label><input id="tpl" value="https://data.source.coop/tge-labs/meta-chm-v2/chm/{qk}.tif"></div>
 </div>
+<div id="map"></div>
+<div class="sub" style="margin:4px 2px 0;font-size:12px">Click the map to set the customer location. Click a tower marker to select it. Use the layer control for satellite view.</div>
 <div class="row"><button id="go">Check path</button><button id="test" class="alt">Test connections</button></div>
 <div id="verdict"></div>
 <canvas id="cv"></canvas>
+<div id="legend"><span><i style="background:#b9a68a"></i>Ground (with earth bulge)</span><span><i style="background:#4caf50"></i>Canopy</span><span><i style="background:#1d5fd1"></i>Line of sight</span><span><i style="border-top:2px dashed #1d5fd1;height:0"></i>60% Fresnel limit</span></div>
 <pre id="log">Ready.</pre>
-<footer>Canopy height: Meta and World Resources Institute (2026), CHMv2, CC BY 4.0, via Source Cooperative (Taylor Geospatial Engine Labs). Elevation: Terrarium tiles (Mapzen / open data). Advisory only: a model estimate, not a survey.</footer>
+<footer>Canopy height: Meta and World Resources Institute (2026), CHMv2, CC BY 4.0, via Source Cooperative (Taylor Geospatial Engine Labs). Elevation: Terrarium tiles (Mapzen / open data). Maps: OpenStreetMap contributors; satellite imagery by Esri (check Esri's terms before any commercial use). Advisory only: a model estimate, not a survey.</footer>
 
 <script>
 const $=id=>document.getElementById(id), log=m=>$("log").textContent=m;
@@ -52,7 +60,7 @@ $("kml").onchange=async e=>{
   const hv=p.querySelector('Data[name="height_m"] value');
   return {name:p.querySelector("name")?.textContent||"Tower",lat,lon,h:hv?+hv.textContent:(alt||20)};
  });
- if(list.length){towers=list;fillTowers();log(`Loaded ${list.length} towers from KML.`)}
+ if(list.length){towers=list;fillTowers();drawMap(true);log(`Loaded ${list.length} towers from KML.`)}
 };
 
 // ---- geometry helpers
@@ -100,7 +108,7 @@ $("go").onclick=async()=>{
    if(i&&i<n){const fr=(los-(g[i]+c[i]+bulge))/r,ft=(los-(g[i]+bulge))/r;
     if(fr<best.f)best={f:fr,i};if(ft<bestT.f)bestT={f:ft};maxC=Math.max(maxC,c[i])}
    return{d:p.d,g:g[i]+bulge,o:g[i]+c[i]+bulge,los,r}});
-  const pc=x=>Math.round(x*100)+"%",cls=best.f>=.8?"green":best.f>=.6?"amber":"red",word={green:"Clear",amber:"Marginal",red:"Blocked / at risk"}[cls];
+  const pc=x=>x<-1?"below -100%":Math.round(x*100)+"%",cls=best.f>=.8?"green":best.f>=.6?"amber":"red",word={green:"Clear",amber:"Marginal",red:"Blocked / at risk"}[cls];
   const v=$("verdict");v.style.display="block";v.className=cls;
   v.textContent=canopyOk?`${word}: worst Fresnel clearance ${pc(best.f)} at ${(pts[best.i].d/1000).toFixed(2)} km from tower. Terrain-only result would be ${pc(bestT.f)}. Tallest canopy on path: ${maxC} m.`
    :`Canopy data failed to load, so this is TERRAIN ONLY: worst clearance ${pc(bestT.f)}. (${err})`;
@@ -117,8 +125,29 @@ function draw(p){
  area("o","#4caf50");area("g","#b9a68a");
  x.lineWidth=2*dpr;x.strokeStyle="#1d5fd1";x.beginPath();p.forEach((q,i)=>x[i?"lineTo":"moveTo"](X(q.d),Y(q.los)));x.stroke();
  x.setLineDash([6*dpr,4*dpr]);x.lineWidth=dpr;x.beginPath();p.forEach((q,i)=>x[i?"lineTo":"moveTo"](X(q.d),Y(q.los-q.r*.6)));x.stroke();x.setLineDash([]);
- x.fillStyle="#333";x.font=`${11*dpr}px system-ui`;x.fillText("Tan: ground (with earth bulge)   Green: canopy   Blue: line of sight   Dashed: 60% Fresnel limit",pad,14*dpr);
+ x.fillStyle="#333";x.font=`${11*dpr}px system-ui`;
  x.fillText("0 km",pad,H-8*dpr);x.fillText((D/1000).toFixed(1)+" km",W-pad-40*dpr,H-8*dpr)}
+
+// ---- map
+const map=L.map("map").setView([-29.1,26.2],12);
+const osm=L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);
+const sat=L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",{maxZoom:19,attribution:"Imagery &copy; Esri, Maxar, Earthstar Geographics"});
+L.control.layers({"Map":osm,"Satellite":sat}).addTo(map);
+let tMarks=[],cMark=null,pLine=null;
+function drawMap(fit){
+ tMarks.forEach(m=>m.remove());
+ tMarks=towers.map((t,i)=>L.marker([t.lat,t.lon]).addTo(map).bindTooltip(t.name).on("click",()=>{$("tower").value=i;updLine()}));
+ if(fit&&towers.length)map.fitBounds(L.latLngBounds(towers.map(t=>[t.lat,t.lon])).pad(0.3));
+ updLine()}
+function updLine(){
+ const t=towers[$("tower").value],c=$("cust").value.split(",").map(Number);
+ cMark?.remove();pLine?.remove();
+ if(!t||c.length<2||c.some(isNaN))return;
+ cMark=L.circleMarker(c,{radius:7,color:"#c0392b",fillOpacity:.8}).addTo(map);
+ pLine=L.polyline([[t.lat,t.lon],c],{color:"#c0392b",weight:2,dashArray:"5 5"}).addTo(map)}
+map.on("click",e=>{$("cust").value=e.latlng.lat.toFixed(5)+", "+e.latlng.lng.toFixed(5);updLine()});
+$("tower").onchange=updLine;$("cust").onchange=updLine;
+drawMap(true);
 
 // ---- connection test (the CORS check)
 $("test").onclick=async()=>{
