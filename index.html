@@ -9,6 +9,8 @@
 <script src="https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.js"></script>
 <style>
  #map{height:340px;border-radius:8px;margin-top:12px;border:1px solid #ddd}
+ .full{grid-column:1/-1}
+ #verdict:empty{display:none}
  #legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12px;color:#444;margin:6px 2px 0}
  #legend i{display:inline-block;width:14px;height:10px;margin-right:5px;vertical-align:middle;border-radius:2px}
  body{font:15px/1.5 system-ui,sans-serif;max-width:900px;margin:0 auto;padding:16px;color:#222}
@@ -20,30 +22,45 @@
  .green{background:#d6f5dd;color:#0b5a22}.amber{background:#fff0c2;color:#7a5200}.red{background:#fbd9d6;color:#8a1a12}
  canvas{width:100%;height:320px;border:1px solid #ddd;border-radius:8px} pre{background:#f5f5f5;padding:10px;border-radius:8px;white-space:pre-wrap;font-size:12px}
  footer{font-size:12px;color:#777;margin-top:16px}
+ @media(min-width:1000px){
+  body{max-width:1600px;padding:12px 20px}
+  #app{display:grid;grid-template-columns:380px minmax(0,1fr);gap:20px;align-items:start}
+  #side{position:sticky;top:12px;max-height:calc(100vh - 24px);overflow:auto;padding-right:4px}
+  .grid{grid-template-columns:1fr 1fr}
+  #map{height:calc(100vh - 440px);min-height:320px;margin-top:0}
+  #verdict{margin-top:0}
+  canvas{height:230px}
+ }
 </style>
 </head>
 <body>
 <h1>Canopy-aware line-of-sight check</h1>
 <div class="sub">Proof of concept. Dummy towers around Bloemfontein. Everything runs in your browser.</div>
 
+<div id="app">
+<div id="side">
 <div class="grid">
- <div><label>Tower (dummy list or your KML)</label><select id="tower"></select></div>
- <div><label>Load tower KML (stays on your machine)</label><input type="file" id="kml" accept=".kml"></div>
+ <div class="full"><label>Tower (dummy list or your KML)</label><select id="tower"></select></div>
+ <div class="full"><label>Load tower KML (stays on your machine)</label><input type="file" id="kml" accept=".kml"></div>
  <div><label>Tower coordinates (lat, lon)</label><input id="tpos"></div>
  <div><label>Tower height (m)</label><input id="th" type="number" min="0"></div>
- <div><label>&nbsp;</label><button id="tnew" class="alt">Add as new tower</button></div>
+ <div class="full"><button id="tnew" class="alt">Add as new tower</button></div>
  <div><label>Customer location (lat, lon)</label><input id="cust" value="-29.0990, 26.2290"></div>
  <div><label>Customer mount height (m)</label><input id="hc" type="number" value="6"></div>
  <div><label>Frequency (GHz)</label><input id="freq" type="number" step="0.1" value="5.8"></div>
- <div><label>Canopy tile URL ({qk} = quadkey)</label><input id="tpl" value="https://data.source.coop/tge-labs/meta-chm-v2/chm/{qk}.tif"></div>
+ <div class="full"><label>Canopy tile URL ({qk} = quadkey)</label><input id="tpl" value="https://data.source.coop/tge-labs/meta-chm-v2/chm/{qk}.tif"></div>
 </div>
+<div class="row"><button id="go">Check path</button><button id="test" class="alt">Test connections</button></div>
+<pre id="log">Ready.</pre>
+</div>
+<div id="main">
+<div id="verdict"></div>
 <div id="map"></div>
 <div class="sub" style="margin:4px 2px 0;font-size:12px">Click the map to set the customer location. Click a tower marker to select it. Use the layer control for satellite view.</div>
-<div class="row"><button id="go">Check path</button><button id="test" class="alt">Test connections</button></div>
-<div id="verdict"></div>
 <canvas id="cv"></canvas>
 <div id="legend"><span><i style="background:#b9a68a"></i>Ground (with earth bulge)</span><span><i style="background:#4caf50"></i>Canopy</span><span><i style="background:#1d5fd1"></i>Line of sight</span><span><i style="border-top:2px dashed #1d5fd1;height:0"></i>60% Fresnel limit</span></div>
-<pre id="log">Ready.</pre>
+</div>
+</div>
 <footer>Canopy height: Meta and World Resources Institute (2026), CHMv2, CC BY 4.0, via Source Cooperative (Taylor Geospatial Engine Labs). Elevation: Terrarium tiles (Mapzen / open data). Maps: OpenStreetMap contributors; satellite imagery by Esri (check Esri's terms before any commercial use). Advisory only: a model estimate, not a survey.</footer>
 
 <script>
