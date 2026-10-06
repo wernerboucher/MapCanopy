@@ -5,7 +5,7 @@
     <Placemark>
       <name>Dummy A (Naval Hill summit)</name>
       <ExtendedData><Data name="height_m"><value>25</value></Data></ExtendedData>
-      <Point><coordinates>26.2253,-29.1066</coordinates></Point>
+      <Point><coordinates>26.2375,-29.0997</coordinates></Point>
     </Placemark>
     <Placemark>
       <name>Dummy B (north)</name>
