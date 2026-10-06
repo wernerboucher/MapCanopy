@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Canopy-aware LOS check (PoC)</title>
+<script src="https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.js"></script>
+<style>
+ body{font:15px/1.5 system-ui,sans-serif;max-width:900px;margin:0 auto;padding:16px;color:#222}
+ h1{font-size:20px;margin:0 0 4px} .sub{color:#666;margin-bottom:16px}
+ .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
+ label{display:block;font-size:12px;color:#555} input,select,button{width:100%;box-sizing:border-box;padding:7px;font:inherit}
+ button{cursor:pointer;background:#1d5fd1;color:#fff;border:0;border-radius:6px} button.alt{background:#eee;color:#222}
+ .row{display:flex;gap:10px;margin:12px 0} #verdict{padding:12px;border-radius:8px;margin:12px 0;font-weight:600;display:none}
+ .green{background:#d6f5dd;color:#0b5a22}.amber{background:#fff0c2;color:#7a5200}.red{background:#fbd9d6;color:#8a1a12}
+ canvas{width:100%;height:320px;border:1px solid #ddd;border-radius:8px} pre{background:#f5f5f5;padding:10px;border-radius:8px;white-space:pre-wrap;font-size:12px}
+ footer{font-size:12px;color:#777;margin-top:16px}
+</style>
+</head>
+<body>
+<h1>Canopy-aware line-of-sight check</h1>
+<div class="sub">Proof of concept. Dummy towers around Bloemfontein. Everything runs in your browser.</div>
+
+<div class="grid">
+ <div><label>Tower (dummy list or your KML)</label><select id="tower"></select></div>
+ <div><label>Load tower KML (stays on your machine)</label><input type="file" id="kml" accept=".kml"></div>
+ <div><label>Customer location (lat, lon)</label><input id="cust" value="-29.0990, 26.2290"></div>
+ <div><label>Customer mount height (m)</label><input id="hc" type="number" value="6"></div>
+ <div><label>Frequency (GHz)</label><input id="freq" type="number" step="0.1" value="5.8"></div>
+ <div><label>Canopy tile URL ({qk} = quadkey)</label><input id="tpl" value="https://data.source.coop/tge-labs/meta-chm-v2/chm/{qk}.tif"></div>
+</div>
+<div class="row"><button id="go">Check path</button><button id="test" class="alt">Test connections</button></div>
+<div id="verdict"></div>
+<canvas id="cv"></canvas>
+<pre id="log">Ready.</pre>
+<footer>Canopy height: Meta and World Resources Institute (2026), CHMv2, CC BY 4.0, via Source Cooperative (Taylor Geospatial Engine Labs). Elevation: Terrarium tiles (Mapzen / open data). Advisory only: a model estimate, not a survey.</footer>
+
+<script>
+const $=id=>document.getElementById(id), log=m=>$("log").textContent=m;
+const R=6371000, K=4/3, Z_ELEV=13, Z_QK=10, ZOOMR=6378137;
+let towers=[ // invented; move these onto real ridges. lon,lat order is handled below
+ {name:"Dummy A (Naval Hill area)",lat:-29.0985,lon:26.2045,h:25},
+ {name:"Dummy B (north)",lat:-29.0600,lon:26.2400,h:30},
+ {name:"Dummy C (south-west)",lat:-29.1500,lon:26.1600,h:30}];
+function fillTowers(){$("tower").innerHTML=towers.map((t,i)=>`<option value="${i}">${t.name} (${t.h} m)</option>`).join("")}
+fillTowers();
+
+$("kml").onchange=async e=>{
+ const doc=new DOMParser().parseFromString(await e.target.files[0].text(),"text/xml");
+ const list=[...doc.querySelectorAll("Placemark")].map(p=>{
+  const [lon,lat,alt]=p.querySelector("coordinates").textContent.trim().split(",").map(Number);
+  const hv=p.querySelector('Data[name="height_m"] value');
+  return {name:p.querySelector("name")?.textContent||"Tower",lat,lon,h:hv?+hv.textContent:(alt||20)};
+ });
+ if(list.length){towers=list;fillTowers();log(`Loaded ${list.length} towers from KML.`)}
+};
+
+// ---- geometry helpers
+const rad=d=>d*Math.PI/180;
+function hav(a,b,c,d){const p=rad(c-a),q=rad(d-b),x=Math.sin(p/2)**2+Math.cos(rad(a))*Math.cos(rad(c))*Math.sin(q/2)**2;return 2*R*Math.asin(Math.sqrt(x))}
+function tileF(lat,lon,z){const n=2**z,s=Math.sin(rad(lat));return[(lon+180)/360*n,(0.5-Math.log((1+s)/(1-s))/(4*Math.PI))*n]}
+function quadkey(lat,lon){const [fx,fy]=tileF(lat,lon,Z_QK);const x=Math.floor(fx),y=Math.floor(fy);let q="";
+ for(let i=Z_QK;i>0;i--){const m=1<<(i-1);q+=(x&m?1:0)+(y&m?2:0)}return q}
+const merc=(lat,lon)=>[ZOOMR*rad(lon),ZOOMR*Math.log(Math.tan(Math.PI/4+rad(lat)/2))];
+
+// ---- elevation (Terrarium PNG tiles, ~16 m cells here)
+const eTiles={};
+function eTile(x,y){const k=x+"/"+y;return eTiles[k]??=fetch(`https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${Z_ELEV}/${x}/${y}.png`)
+ .then(r=>{if(!r.ok)throw new Error("elev "+r.status);return r.blob()}).then(createImageBitmap).then(b=>{
+  const c=new OffscreenCanvas(256,256),g=c.getContext("2d");g.drawImage(b,0,0);return g.getImageData(0,0,256,256).data})}
+async function elev(lat,lon){const [fx,fy]=tileF(lat,lon,Z_ELEV),x=Math.floor(fx),y=Math.floor(fy);
+ const d=await eTile(x,y),i=(Math.min(255,Math.floor((fy-y)*256))*256+Math.min(255,Math.floor((fx-x)*256)))*4;
+ return d[i]*256+d[i+1]+d[i+2]/256-32768}
+
+// ---- canopy (CHMv2 COGs, EPSG:3857, uint8 metres)
+const cogs={};
+function cog(qk){return cogs[qk]??=GeoTIFF.fromUrl($("tpl").value.replace("{qk}",qk)).then(t=>t.getImage())}
+async function canopy(lat,lon,spacing){
+ const img=await cog(quadkey(lat,lon)),[x0,y0]=img.getOrigin(),[rx,ry]=img.getResolution();
+ const [mx,my]=merc(lat,lon),px=(mx-x0)/rx,py=(my-y0)/ry,half=Math.max(1,Math.ceil(spacing/(Math.abs(rx)*Math.cos(rad(lat)))/2));
+ const w=[Math.max(0,Math.floor(px-half)),Math.max(0,Math.floor(py-half)),Math.min(img.getWidth(),Math.floor(px+half)+1),Math.min(img.getHeight(),Math.floor(py+half)+1)];
+ if(w[2]<=w[0]||w[3]<=w[1])return 0;
+ const r=await img.readRasters({window:w,samples:[0]});let m=0;for(const v of r[0])if(v>m)m=v;return m} // max, so thin tree lines survive
+
+// ---- main check
+$("go").onclick=async()=>{
+ try{
+  const t=towers[$("tower").value],[clat,clon]=$("cust").value.split(",").map(Number),hc=+$("hc").value,f=+$("freq").value;
+  if(isNaN(clat)||isNaN(clon))throw new Error("Customer location must look like: -29.10, 26.22");
+  const D=hav(t.lat,t.lon,clat,clon),sp=Math.max(5,D/400),n=Math.max(2,Math.round(D/sp)),pts=[];
+  for(let i=0;i<=n;i++)pts.push({d:D*i/n,lat:t.lat+(clat-t.lat)*i/n,lon:t.lon+(clon-t.lon)*i/n});
+  log(`Path ${(D/1000).toFixed(2)} km, ${n+1} samples. Fetching elevation...`);
+  const g=await Promise.all(pts.map(p=>elev(p.lat,p.lon)));
+  log("Fetching canopy...");let canopyOk=true,c=new Array(pts.length).fill(0),err="";
+  try{for(let i=0;i<pts.length;i+=16)await Promise.all(pts.slice(i,i+16).map((p,j)=>canopy(p.lat,p.lon,D/n).then(v=>c[i+j]=v)))}
+  catch(e){canopyOk=false;err=e.message;c=c.fill(0)}
+  const ha=g[0]+t.h,hb=g[n]+hc;let best={f:9,i:0},bestT={f:9},maxC=0;
+  const prof=pts.map((p,i)=>{const d1=p.d/1000,d2=(D-p.d)/1000,bulge=p.d*(D-p.d)/(2*K*R),
+   los=ha+(hb-ha)*i/n,r=i&&i<n?17.32*Math.sqrt(d1*d2/(f*D/1000)):0;
+   if(i&&i<n){const fr=(los-(g[i]+c[i]+bulge))/r,ft=(los-(g[i]+bulge))/r;
+    if(fr<best.f)best={f:fr,i};if(ft<bestT.f)bestT={f:ft};maxC=Math.max(maxC,c[i])}
+   return{d:p.d,g:g[i]+bulge,o:g[i]+c[i]+bulge,los,r}});
+  const pc=x=>Math.round(x*100)+"%",cls=best.f>=.8?"green":best.f>=.6?"amber":"red",word={green:"Clear",amber:"Marginal",red:"Blocked / at risk"}[cls];
+  const v=$("verdict");v.style.display="block";v.className=cls;
+  v.textContent=canopyOk?`${word}: worst Fresnel clearance ${pc(best.f)} at ${(pts[best.i].d/1000).toFixed(2)} km from tower. Terrain-only result would be ${pc(bestT.f)}. Tallest canopy on path: ${maxC} m.`
+   :`Canopy data failed to load, so this is TERRAIN ONLY: worst clearance ${pc(bestT.f)}. (${err})`;
+  draw(prof);log(`Done. Terrain-only min clearance ${pc(bestT.f)}; with canopy ${canopyOk?pc(best.f):"n/a"}.`+(canopyOk?"":"\nCanopy error: "+err));
+ }catch(e){log("Error: "+e.message)}
+};
+
+function draw(p){
+ const cv=$("cv"),dpr=devicePixelRatio||1,W=cv.width=cv.clientWidth*dpr,H=cv.height=cv.clientHeight*dpr,x=cv.getContext("2d");
+ x.setTransform(1,0,0,1,0,0);x.clearRect(0,0,W,H);
+ const all=p.flatMap(q=>[q.g,q.o,q.los+q.r*.2,q.los-q.r]),lo=Math.min(...all)-5,hi=Math.max(...all)+5,D=p[p.length-1].d,pad=30*dpr;
+ const X=d=>pad+d/D*(W-2*pad),Y=h=>H-pad-(h-lo)/(hi-lo)*(H-2*pad);
+ const area=(k,col)=>{x.beginPath();x.moveTo(X(0),Y(lo));p.forEach(q=>x.lineTo(X(q.d),Y(q[k])));x.lineTo(X(D),Y(lo));x.closePath();x.fillStyle=col;x.fill()};
+ area("o","#4caf50");area("g","#b9a68a");
+ x.lineWidth=2*dpr;x.strokeStyle="#1d5fd1";x.beginPath();p.forEach((q,i)=>x[i?"lineTo":"moveTo"](X(q.d),Y(q.los)));x.stroke();
+ x.setLineDash([6*dpr,4*dpr]);x.lineWidth=dpr;x.beginPath();p.forEach((q,i)=>x[i?"lineTo":"moveTo"](X(q.d),Y(q.los-q.r*.6)));x.stroke();x.setLineDash([]);
+ x.fillStyle="#333";x.font=`${11*dpr}px system-ui`;x.fillText("Tan: ground (with earth bulge)   Green: canopy   Blue: line of sight   Dashed: 60% Fresnel limit",pad,14*dpr);
+ x.fillText("0 km",pad,H-8*dpr);x.fillText((D/1000).toFixed(1)+" km",W-pad-40*dpr,H-8*dpr)}
+
+// ---- connection test (the CORS check)
+$("test").onclick=async()=>{
+ const t=towers[$("tower").value];let out=[];
+ try{await eTile(...tileF(t.lat,t.lon,Z_ELEV).map(Math.floor));out.push("Elevation tiles: OK")}catch(e){out.push("Elevation tiles: FAILED ("+e.message+")")}
+ const qk=quadkey(t.lat,t.lon),url=$("tpl").value.replace("{qk}",qk);
+ try{const r=await fetch(url,{headers:{Range:"bytes=0-1023"}});
+  out.push(`Canopy tile ${qk}: HTTP ${r.status} (${r.status==206?"range requests work":"range NOT honoured, whole file may download"}), Content-Range ${r.headers.get("content-range")?"readable":"not exposed"}`)}
+ catch(e){out.push("Canopy tile "+qk+": BLOCKED, likely CORS or wrong URL ("+e.message+")")}
+ log(out.join("\n")+"\nURL: "+url)};
+</script>
+</body>
+</html>

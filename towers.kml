@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>Dummy towers - Bloemfontein</name>
+    <Placemark>
+      <name>Dummy A (Naval Hill area)</name>
+      <ExtendedData><Data name="height_m"><value>25</value></Data></ExtendedData>
+      <Point><coordinates>26.2045,-29.0985</coordinates></Point>
+    </Placemark>
+    <Placemark>
+      <name>Dummy B (north)</name>
+      <ExtendedData><Data name="height_m"><value>30</value></Data></ExtendedData>
+      <Point><coordinates>26.2400,-29.0600</coordinates></Point>
+    </Placemark>
+    <Placemark>
+      <name>Dummy C (south-west)</name>
+      <ExtendedData><Data name="height_m"><value>30</value></Data></ExtendedData>
+      <Point><coordinates>26.1600,-29.1500</coordinates></Point>
+    </Placemark>
+  </Document>
+</kml>
