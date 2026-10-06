@@ -47,21 +47,22 @@
 const $=id=>document.getElementById(id), log=m=>$("log").textContent=m;
 const R=6371000, K=4/3, Z_ELEV=13, Z_QK=10, ZOOMR=6378137;
 let towers=[ // invented; move these onto real ridges. lon,lat order is handled below
- {name:"Dummy A (Naval Hill area)",lat:-29.0985,lon:26.2045,h:25},
+ {name:"Dummy A (Naval Hill summit)",lat:-29.0997,lon:26.2375,h:25},
  {name:"Dummy B (north)",lat:-29.0600,lon:26.2400,h:30},
  {name:"Dummy C (south-west)",lat:-29.1500,lon:26.1600,h:30}];
 function fillTowers(){$("tower").innerHTML=towers.map((t,i)=>`<option value="${i}">${t.name} (${t.h} m)</option>`).join("")}
 fillTowers();
 
-$("kml").onchange=async e=>{
- const doc=new DOMParser().parseFromString(await e.target.files[0].text(),"text/xml");
+$("kml").onchange=async e=>loadKml(await e.target.files[0].text(),"your file");
+function loadKml(text,src){
+ const doc=new DOMParser().parseFromString(text,"text/xml");
  const list=[...doc.querySelectorAll("Placemark")].map(p=>{
   const [lon,lat,alt]=p.querySelector("coordinates").textContent.trim().split(",").map(Number);
   const hv=p.querySelector('Data[name="height_m"] value');
   return {name:p.querySelector("name")?.textContent||"Tower",lat,lon,h:hv?+hv.textContent:(alt||20)};
  });
- if(list.length){towers=list;fillTowers();drawMap(true);log(`Loaded ${list.length} towers from KML.`)}
-};
+ if(list.length){towers=list;fillTowers();drawMap(true);log(`Loaded ${list.length} towers from ${src}.`)}
+}
 
 // ---- geometry helpers
 const rad=d=>d*Math.PI/180;
@@ -148,6 +149,8 @@ function updLine(){
 map.on("click",e=>{$("cust").value=e.latlng.lat.toFixed(5)+", "+e.latlng.lng.toFixed(5);updLine()});
 $("tower").onchange=updLine;$("cust").onchange=updLine;
 drawMap(true);
+// load towers.kml sitting next to this page (if present); otherwise the built-in dummy list stays
+fetch("towers.kml").then(r=>r.ok?r.text():Promise.reject()).then(t=>loadKml(t,"towers.kml")).catch(()=>{});
 
 // ---- connection test (the CORS check)
 $("test").onclick=async()=>{
