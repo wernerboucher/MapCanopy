@@ -3,9 +3,9 @@
   <Document>
     <name>Dummy towers - Bloemfontein</name>
     <Placemark>
-      <name>Dummy A (Naval Hill area)</name>
+      <name>Dummy A (Naval Hill summit)</name>
       <ExtendedData><Data name="height_m"><value>25</value></Data></ExtendedData>
-      <Point><coordinates>26.2045,-29.0985</coordinates></Point>
+      <Point><coordinates>26.2253,-29.1066</coordinates></Point>
     </Placemark>
     <Placemark>
       <name>Dummy B (north)</name>
