@@ -29,6 +29,9 @@
 <div class="grid">
  <div><label>Tower (dummy list or your KML)</label><select id="tower"></select></div>
  <div><label>Load tower KML (stays on your machine)</label><input type="file" id="kml" accept=".kml"></div>
+ <div><label>Tower coordinates (lat, lon)</label><input id="tpos"></div>
+ <div><label>Tower height (m)</label><input id="th" type="number" min="0"></div>
+ <div><label>&nbsp;</label><button id="tnew" class="alt">Add as new tower</button></div>
  <div><label>Customer location (lat, lon)</label><input id="cust" value="-29.0990, 26.2290"></div>
  <div><label>Customer mount height (m)</label><input id="hc" type="number" value="6"></div>
  <div><label>Frequency (GHz)</label><input id="freq" type="number" step="0.1" value="5.8"></div>
@@ -50,7 +53,8 @@ let towers=[ // invented; move these onto real ridges. lon,lat order is handled 
  {name:"Dummy A (Naval Hill summit)",lat:-29.0997,lon:26.2375,h:25},
  {name:"Dummy B (north)",lat:-29.0600,lon:26.2400,h:30},
  {name:"Dummy C (south-west)",lat:-29.1500,lon:26.1600,h:30}];
-function fillTowers(){$("tower").innerHTML=towers.map((t,i)=>`<option value="${i}">${t.name} (${t.h} m)</option>`).join("")}
+function fillTowers(sel=0){$("tower").innerHTML=towers.map((t,i)=>`<option value="${i}">${t.name} (${t.h} m)</option>`).join("");$("tower").value=sel;syncBoxes()}
+function syncBoxes(){const t=towers[$("tower").value];if(t){$("tpos").value=t.lat.toFixed(5)+", "+t.lon.toFixed(5);$("th").value=t.h}}
 fillTowers();
 
 $("kml").onchange=async e=>loadKml(await e.target.files[0].text(),"your file");
@@ -137,7 +141,7 @@ L.control.layers({"Map":osm,"Satellite":sat}).addTo(map);
 let tMarks=[],cMark=null,pLine=null;
 function drawMap(fit){
  tMarks.forEach(m=>m.remove());
- tMarks=towers.map((t,i)=>L.marker([t.lat,t.lon]).addTo(map).bindTooltip(t.name).on("click",()=>{$("tower").value=i;updLine()}));
+ tMarks=towers.map((t,i)=>L.marker([t.lat,t.lon]).addTo(map).bindTooltip(t.name).on("click",()=>{$("tower").value=i;syncBoxes();updLine()}));
  if(fit&&towers.length)map.fitBounds(L.latLngBounds(towers.map(t=>[t.lat,t.lon])).pad(0.3));
  updLine()}
 function updLine(){
@@ -147,7 +151,15 @@ function updLine(){
  cMark=L.circleMarker(c,{radius:7,color:"#c0392b",fillOpacity:.8}).addTo(map);
  pLine=L.polyline([[t.lat,t.lon],c],{color:"#c0392b",weight:2,dashArray:"5 5"}).addTo(map)}
 map.on("click",e=>{$("cust").value=e.latlng.lat.toFixed(5)+", "+e.latlng.lng.toFixed(5);updLine()});
-$("tower").onchange=updLine;$("cust").onchange=updLine;
+$("tower").onchange=()=>{syncBoxes();updLine()};$("cust").onchange=updLine;
+function readTower(){const p=$("tpos").value.split(",").map(Number),h=+$("th").value;
+ if(p.length<2||p.some(isNaN)||!(h>=0)||$("th").value===""){log("Tower coordinates must look like: -29.0997, 26.2375, plus a height in metres.");return null}
+ return{lat:p[0],lon:p[1],h}}
+function editTower(){const v=readTower();if(!v)return;Object.assign(towers[$("tower").value],v);
+ fillTowers($("tower").value);drawMap(false);map.setView([v.lat,v.lon],map.getZoom())}
+$("tpos").onchange=editTower;$("th").onchange=editTower;
+$("tnew").onclick=()=>{const v=readTower();if(!v)return;towers.push({name:"Custom tower "+(towers.length+1),...v});
+ fillTowers(towers.length-1);drawMap(false);map.setView([v.lat,v.lon],map.getZoom())};
 drawMap(true);
 // load towers.kml sitting next to this page (if present); otherwise the built-in dummy list stays
 fetch("towers.kml").then(r=>r.ok?r.text():Promise.reject()).then(t=>loadKml(t,"towers.kml")).catch(()=>{});
