@@ -60,7 +60,7 @@
 <div id="map"></div>
 <div class="sub" style="margin:4px 2px 0;font-size:12px">Click the map to set the customer location. Click a tower marker to select it. Use the layer control for satellite view.</div>
 <canvas id="cv"></canvas>
-<div id="legend"><span><i style="background:#b9a68a"></i>Ground (with earth bulge)</span><span><i style="background:#4caf50"></i>Canopy</span><span><i style="background:#1d5fd1"></i>Line of sight</span><span><i style="border-top:2px dashed #1d5fd1;height:0"></i>60% Fresnel limit</span></div>
+<div id="legend"><span><i style="background:#b9a68a"></i>Ground (with earth bulge)</span><span><i style="background:#4caf50"></i>Canopy</span><span><i style="background:#6b7a99"></i>Buildings</span><span><i style="background:#1d5fd1"></i>Line of sight</span><span><i style="border-top:2px dashed #1d5fd1;height:0"></i>60% Fresnel limit</span></div>
 </div>
 </div>
 <footer>Canopy height: Meta and World Resources Institute (2026), CHMv2, CC BY 4.0, via Source Cooperative (Taylor Geospatial Engine Labs). Elevation: Terrarium tiles (Mapzen / open data). Maps: OpenStreetMap contributors; satellite imagery by Esri (check Esri's terms before any commercial use). Advisory only: a model estimate, not a survey.</footer>
@@ -147,8 +147,8 @@ $("go").onclick=async()=>{
   log("Fetching canopy...");let canopyOk=true,c=new Array(pts.length).fill(0),err="";
   try{for(let i=0;i<pts.length;i+=16)await Promise.all(pts.slice(i,i+16).map((p,j)=>canopy(p.lat,p.lon,D/n).then(v=>c[i+j]=v)))}
   catch(e){canopyOk=false;err=e.message;c=c.fill(0)}
-  const maxCan=Math.max(...c);let maxB=0,bNote="";
-  if(bTiles.length){log("Reading buildings...");try{const bs=new Array(pts.length).fill(0);let out=0;
+  const maxCan=Math.max(...c),cCan=c.slice();let maxB=0,bNote="",bs=null;
+  if(bTiles.length){log("Reading buildings...");try{bs=new Array(pts.length).fill(0);let out=0;
    for(let i=0;i<pts.length;i+=16)await Promise.all(pts.slice(i,i+16).map((p,j)=>bldAt(p.lat,p.lon,D/n).then(v=>{if(v===null)out++;else bs[i+j]=v})));
    maxB=Math.max(...bs);c=c.map((v,i)=>Math.max(v,bs[i]));if(out>pts.length/2)bNote=" (the buildings file covers little of this path)"}
    catch(e){bNote=" (buildings failed: "+e.message+")"}}
@@ -157,7 +157,7 @@ $("go").onclick=async()=>{
    los=ha+(hb-ha)*i/n,r=i&&i<n?17.32*Math.sqrt(d1*d2/(f*D/1000)):0;
    if(i&&i<n){const fr=(los-(g[i]+c[i]+bulge))/r,ft=(los-(g[i]+bulge))/r;
     if(fr<best.f)best={f:fr,i};if(ft<bestT.f)bestT={f:ft};maxC=Math.max(maxC,c[i])}
-   return{d:p.d,g:g[i]+bulge,o:g[i]+c[i]+bulge,los,r}});
+   return{d:p.d,g:g[i]+bulge,o:g[i]+c[i]+bulge,cn:cCan[i],b:bs?bs[i]:0,los,r}});
   const pc=x=>x<-1?"below -100%":Math.round(x*100)+"%",cls=best.f>=.8?"green":best.f>=.6?"amber":"red",word={green:"Clear",amber:"Marginal",red:"Blocked / at risk"}[cls];
   const v=$("verdict");v.style.display="block";v.className=cls;
   v.textContent=canopyOk?`${word}: worst Fresnel clearance ${pc(best.f)} at ${(pts[best.i].d/1000).toFixed(2)} km from tower. Terrain-only result would be ${pc(bestT.f)}. Tallest canopy on path: ${maxCan} m.`+(bTiles.length?` Tallest building: ${maxB} m.${bNote}`:"")
@@ -172,7 +172,8 @@ function draw(p){
  const all=p.flatMap(q=>[q.g,q.o,q.los+q.r*.2,q.los-q.r]),lo=Math.min(...all)-5,hi=Math.max(...all)+5,D=p[p.length-1].d,pad=30*dpr;
  const X=d=>pad+d/D*(W-2*pad),Y=h=>H-pad-(h-lo)/(hi-lo)*(H-2*pad);
  const area=(k,col)=>{x.beginPath();x.moveTo(X(0),Y(lo));p.forEach(q=>x.lineTo(X(q.d),Y(q[k])));x.lineTo(X(D),Y(lo));x.closePath();x.fillStyle=col;x.fill()};
- area("o","#4caf50");area("g","#b9a68a");
+ for(let i=0;i<p.length-1;i++){const q=p[i],w=Math.max(1,X(p[i+1].d)-X(q.d)+1);x.fillStyle=q.b>q.cn?"#6b7a99":"#4caf50";x.fillRect(X(q.d),Y(q.o),w,Y(lo)-Y(q.o))} // slate = building, green = canopy
+ area("g","#b9a68a");
  x.lineWidth=2*dpr;x.strokeStyle="#1d5fd1";x.beginPath();p.forEach((q,i)=>x[i?"lineTo":"moveTo"](X(q.d),Y(q.los)));x.stroke();
  x.setLineDash([6*dpr,4*dpr]);x.lineWidth=dpr;x.beginPath();p.forEach((q,i)=>x[i?"lineTo":"moveTo"](X(q.d),Y(q.los-q.r*.6)));x.stroke();x.setLineDash([]);
  x.fillStyle="#333";x.font=`${11*dpr}px system-ui`;
