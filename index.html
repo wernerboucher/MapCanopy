@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.9.2/proj4.js"></script>
 <style>
  #map{height:340px;border-radius:8px;margin-top:12px;border:1px solid #ddd}
  .full{grid-column:1/-1}
@@ -42,6 +43,7 @@
 <div class="grid">
  <div class="full"><label>Tower (dummy list or your KML)</label><select id="tower"></select></div>
  <div class="full"><label>Load tower KML (stays on your machine)</label><input type="file" id="kml" accept=".kml"></div>
+ <div class="full"><label>Optional: load buildings GeoTIFF tile(s) (Google Open Buildings 2.5D; select several at once; stays on your machine)</label><input type="file" id="bld" accept=".tif,.tiff" multiple></div>
  <div><label>Tower coordinates (lat, lon)</label><input id="tpos"></div>
  <div><label>Tower height (m)</label><input id="th" type="number" min="0"></div>
  <div class="full"><button id="tnew" class="alt">Add as new tower</button></div>
@@ -112,6 +114,27 @@ async function canopy(lat,lon,spacing){
  if(w[2]<=w[0]||w[3]<=w[1])return 0;
  const r=await img.readRasters({window:w,samples:[0]});let m=0;for(const v of r[0])if(v>m)m=v;return m} // max, so thin tree lines survive
 
+// ---- optional buildings layer: one or more local GeoTIFF tiles (3-band tile: band 2 = building_height; 1-band clip: band 1)
+let bTiles=[];
+$("bld").onchange=async e=>{const files=[...e.target.files];if(!files.length)return;
+ try{log(`Opening ${files.length} file(s)...`);const out=[];
+  for(const f of files){const img=await(await GeoTIFF.fromBlob(f)).getImage(),code=img.getGeoKeys().ProjectedCSTypeGeoKey;let def;
+   if(code>=32701&&code<=32760)def=`+proj=utm +zone=${code-32700} +south +datum=WGS84 +units=m +no_defs`;
+   else if(code>=32601&&code<=32660)def=`+proj=utm +zone=${code-32600} +datum=WGS84 +units=m +no_defs`;
+   else throw new Error(f.name+": unsupported projection (EPSG "+code+"), expected UTM.");
+   out.push({img,proj:proj4("EPSG:4326",def),name:f.name})}
+  bTiles=out;const i=out[0].img;
+  log(`Buildings ready: ${out.length} file(s); first is ${i.getWidth()}x${i.getHeight()} px, ${i.getSamplesPerPixel()} band(s), ${Math.abs(i.getResolution()[0])} m cells.`)}
+ catch(err){bTiles=[];log("Could not use those files: "+err.message)}};
+async function bldAt(lat,lon,spacing){
+ let best=null; // null = point is outside every loaded file
+ for(const t of bTiles){const img=t.img,[x0,y0]=img.getOrigin(),[rx,ry]=img.getResolution(),[mx,my]=t.proj.forward([lon,lat]),px=(mx-x0)/rx,py=(my-y0)/ry,W=img.getWidth(),H=img.getHeight();
+  if(px<0||py<0||px>=W||py>=H)continue;
+  const half=Math.max(0,Math.ceil(spacing/Math.abs(rx)/2)),w=[Math.max(0,Math.floor(px-half)),Math.max(0,Math.floor(py-half)),Math.min(W,Math.floor(px+half)+1),Math.min(H,Math.floor(py+half)+1)];
+  const r=await img.readRasters({window:w,samples:[img.getSamplesPerPixel()>1?1:0]});let m=0;for(const v of r[0])if(v>m&&v<255)m=v; // ignores -99 and 255 no-data
+  best=Math.max(best??0,m)} // overlapping tiles: take the higher reading
+ return best}
+
 // ---- main check
 $("go").onclick=async()=>{
  try{
@@ -124,6 +147,11 @@ $("go").onclick=async()=>{
   log("Fetching canopy...");let canopyOk=true,c=new Array(pts.length).fill(0),err="";
   try{for(let i=0;i<pts.length;i+=16)await Promise.all(pts.slice(i,i+16).map((p,j)=>canopy(p.lat,p.lon,D/n).then(v=>c[i+j]=v)))}
   catch(e){canopyOk=false;err=e.message;c=c.fill(0)}
+  const maxCan=Math.max(...c);let maxB=0,bNote="";
+  if(bTiles.length){log("Reading buildings...");try{const bs=new Array(pts.length).fill(0);let out=0;
+   for(let i=0;i<pts.length;i+=16)await Promise.all(pts.slice(i,i+16).map((p,j)=>bldAt(p.lat,p.lon,D/n).then(v=>{if(v===null)out++;else bs[i+j]=v})));
+   maxB=Math.max(...bs);c=c.map((v,i)=>Math.max(v,bs[i]));if(out>pts.length/2)bNote=" (the buildings file covers little of this path)"}
+   catch(e){bNote=" (buildings failed: "+e.message+")"}}
   const ha=g[0]+t.h,hb=g[n]+hc;let best={f:9,i:0},bestT={f:9},maxC=0;
   const prof=pts.map((p,i)=>{const d1=p.d/1000,d2=(D-p.d)/1000,bulge=p.d*(D-p.d)/(2*K*R),
    los=ha+(hb-ha)*i/n,r=i&&i<n?17.32*Math.sqrt(d1*d2/(f*D/1000)):0;
@@ -132,7 +160,7 @@ $("go").onclick=async()=>{
    return{d:p.d,g:g[i]+bulge,o:g[i]+c[i]+bulge,los,r}});
   const pc=x=>x<-1?"below -100%":Math.round(x*100)+"%",cls=best.f>=.8?"green":best.f>=.6?"amber":"red",word={green:"Clear",amber:"Marginal",red:"Blocked / at risk"}[cls];
   const v=$("verdict");v.style.display="block";v.className=cls;
-  v.textContent=canopyOk?`${word}: worst Fresnel clearance ${pc(best.f)} at ${(pts[best.i].d/1000).toFixed(2)} km from tower. Terrain-only result would be ${pc(bestT.f)}. Tallest canopy on path: ${maxC} m.`
+  v.textContent=canopyOk?`${word}: worst Fresnel clearance ${pc(best.f)} at ${(pts[best.i].d/1000).toFixed(2)} km from tower. Terrain-only result would be ${pc(bestT.f)}. Tallest canopy on path: ${maxCan} m.`+(bTiles.length?` Tallest building: ${maxB} m.${bNote}`:"")
    :`Canopy data failed to load, so this is TERRAIN ONLY: worst clearance ${pc(bestT.f)}. (${err})`;
   draw(prof);log(`Done. Terrain-only min clearance ${pc(bestT.f)}; with canopy ${canopyOk?pc(best.f):"n/a"}.`+(canopyOk?"":"\nCanopy error: "+err));
  }catch(e){log("Error: "+e.message)}
