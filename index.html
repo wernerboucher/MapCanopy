@@ -107,12 +107,25 @@ async function elev(lat,lon){const [fx,fy]=tileF(lat,lon,Z_ELEV),x=Math.floor(fx
 // ---- canopy (CHMv2 COGs, EPSG:3857, uint8 metres)
 const cogs={};
 function cog(qk){return cogs[qk]??=GeoTIFF.fromUrl($("tpl").value.replace("{qk}",qk)).then(t=>t.getImage())}
-async function canopy(lat,lon,spacing){
- const img=await cog(quadkey(lat,lon)),[x0,y0]=img.getOrigin(),[rx,ry]=img.getResolution();
- const [mx,my]=merc(lat,lon),px=(mx-x0)/rx,py=(my-y0)/ry,half=Math.max(1,Math.ceil(spacing/(Math.abs(rx)*Math.cos(rad(lat)))/2));
- const w=[Math.max(0,Math.floor(px-half)),Math.max(0,Math.floor(py-half)),Math.min(img.getWidth(),Math.floor(px+half)+1),Math.min(img.getHeight(),Math.floor(py+half)+1)];
- if(w[2]<=w[0]||w[3]<=w[1])return 0;
- const r=await img.readRasters({window:w,samples:[0]});let m=0;for(const v of r[0])if(v>m)m=v;return m} // max, so thin tree lines survive
+// Reads canopy for the whole path: works out which internal blocks of the COG the path touches, fetches each block once (in parallel),
+// then takes the max inside each sample's window from memory. Far fewer requests than one read per sample.
+async function canopyPath(pts,spacing){
+ const items=await Promise.all(pts.map(async(p,i)=>{
+  const qk=quadkey(p.lat,p.lon),img=await cog(qk),[x0,y0]=img.getOrigin(),[rx,ry]=img.getResolution(),[mx,my]=merc(p.lat,p.lon),
+   px=(mx-x0)/rx,py=(my-y0)/ry,half=Math.max(1,Math.ceil(spacing/(Math.abs(rx)*Math.cos(rad(p.lat)))/2)),W=img.getWidth(),H=img.getHeight(),
+   xa=Math.max(0,Math.floor(px-half)),xb=Math.min(W,Math.floor(px+half)+1),ya=Math.max(0,Math.floor(py-half)),yb=Math.min(H,Math.floor(py+half)+1);
+  return{i,qk,img,xa,xb,ya,yb,tw:img.getTileWidth(),th:img.getTileHeight(),W,H}}));
+ const blocks=new Map(),need=it=>{const out=[];if(it.xb<=it.xa||it.yb<=it.ya)return out;
+  for(let by=Math.floor(it.ya/it.th);by<=Math.floor((it.yb-1)/it.th);by++)for(let bx=Math.floor(it.xa/it.tw);bx<=Math.floor((it.xb-1)/it.tw);bx++)out.push([bx,by]);return out};
+ for(const it of items)for(const [bx,by] of need(it)){const k=it.qk+"|"+bx+"|"+by;
+  if(!blocks.has(k)){const x=bx*it.tw,y=by*it.th,x2=Math.min(it.W,x+it.tw),y2=Math.min(it.H,y+it.th);
+   blocks.set(k,it.img.readRasters({window:[x,y,x2,y2],samples:[0]}).then(r=>({d:r[0],x,y,w:x2-x})))}}
+ const got=new Map();for(const [k,pr] of blocks)got.set(k,await pr);
+ const res=new Array(pts.length).fill(0);
+ for(const it of items){let m=0;for(const [bx,by] of need(it)){const B=got.get(it.qk+"|"+bx+"|"+by);
+   for(let y=Math.max(it.ya,B.y);y<Math.min(it.yb,B.y+it.th);y++)for(let x=Math.max(it.xa,B.x);x<Math.min(it.xb,B.x+B.w);x++){const v=B.d[(y-B.y)*B.w+(x-B.x)];if(v>m)m=v}}
+  res[it.i]=m}
+ return res}
 
 // ---- buildings layer
 // Auto mode: reads buildings_4m/tiles.json (made by process_buildings.py) and fetches only the small tiles a path touches.
@@ -153,11 +166,13 @@ $("go").onclick=async()=>{
   const D=hav(t.lat,t.lon,clat,clon),sp=Math.max(5,D/400),n=Math.max(2,Math.round(D/sp)),pts=[];
   for(let i=0;i<=n;i++)pts.push({d:D*i/n,lat:t.lat+(clat-t.lat)*i/n,lon:t.lon+(clon-t.lon)*i/n});
   log(`Path ${(D/1000).toFixed(2)} km, ${n+1} samples. Fetching elevation...`);
-  const g=await Promise.all(pts.map(p=>elev(p.lat,p.lon)));
+  const T={},t0=performance.now();
+  const g=await Promise.all(pts.map(p=>elev(p.lat,p.lon)));T.elev=performance.now()-t0;
   log("Fetching canopy...");let canopyOk=true,c=new Array(pts.length).fill(0),err="";
-  try{for(let i=0;i<pts.length;i+=16)await Promise.all(pts.slice(i,i+16).map((p,j)=>canopy(p.lat,p.lon,D/n).then(v=>c[i+j]=v)))}
+  try{c=await canopyPath(pts,D/n);T.can=performance.now()-t0-T.elev}
   catch(e){canopyOk=false;err=e.message;c=c.fill(0)}
   const maxCan=Math.max(...c),cCan=c.slice();let maxB=0,bNote="",bs=null;
+  const tb=performance.now();
   if(bTiles.length||bIndex){log("Reading buildings...");try{bs=new Array(pts.length).fill(0);let out=0;
    for(let i=0;i<pts.length;i+=16)await Promise.all(pts.slice(i,i+16).map((p,j)=>bldAt(p.lat,p.lon,D/n).then(v=>{if(v===null)out++;else bs[i+j]=v})));
    maxB=Math.max(...bs);c=c.map((v,i)=>Math.max(v,bs[i]));if(out>pts.length/2)bNote=" (the buildings file covers little of this path)"}
@@ -172,7 +187,8 @@ $("go").onclick=async()=>{
   const v=$("verdict");v.style.display="block";v.className=cls;
   v.textContent=canopyOk?`${word}: worst Fresnel clearance ${pc(best.f)} at ${(pts[best.i].d/1000).toFixed(2)} km from tower. Terrain-only result would be ${pc(bestT.f)}. Tallest canopy on path: ${maxCan} m.`+(bTiles.length||bIndex?` Tallest building: ${maxB} m.${bNote}`:"")
    :`Canopy data failed to load, so this is TERRAIN ONLY: worst clearance ${pc(bestT.f)}. (${err})`;
-  draw(prof);log(`Done. Terrain-only min clearance ${pc(bestT.f)}; with canopy ${canopyOk?pc(best.f):"n/a"}.`+(canopyOk?"":"\nCanopy error: "+err));
+  T.bld=bs?performance.now()-tb:0;const sec=x=>((x||0)/1000).toFixed(1)+" s";
+  draw(prof);log(`Timings: elevation ${sec(T.elev)}, canopy ${sec(T.can)}, buildings ${sec(T.bld)}.\nDone. Terrain-only min clearance ${pc(bestT.f)}; with canopy ${canopyOk?pc(best.f):"n/a"}.`+(canopyOk?"":"\nCanopy error: "+err));
  }catch(e){log("Error: "+e.message)}
 };
 
