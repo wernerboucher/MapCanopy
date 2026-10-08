@@ -43,7 +43,7 @@
 <div class="grid">
  <div class="full"><label>Tower (dummy list or your KML)</label><select id="tower"></select></div>
  <div class="full"><label>Load tower KML (stays on your machine)</label><input type="file" id="kml" accept=".kml"></div>
- <div class="full"><label>Optional: load buildings GeoTIFF tile(s) (Google Open Buildings 2.5D; select several at once; stays on your machine)</label><input type="file" id="bld" accept=".tif,.tiff" multiple></div>
+ <div class="full"><label>Buildings: province data loads automatically; use this only to override with local GeoTIFF file(s)</label><input type="file" id="bld" accept=".tif,.tiff" multiple></div>
  <div><label>Tower coordinates (lat, lon)</label><input id="tpos"></div>
  <div><label>Tower height (m)</label><input id="th" type="number" min="0"></div>
  <div class="full"><button id="tnew" class="alt">Add as new tower</button></div>
@@ -63,7 +63,7 @@
 <div id="legend"><span><i style="background:#b9a68a"></i>Ground (with earth bulge)</span><span><i style="background:#4caf50"></i>Canopy</span><span><i style="background:#6b7a99"></i>Buildings</span><span><i style="background:#1d5fd1"></i>Line of sight</span><span><i style="border-top:2px dashed #1d5fd1;height:0"></i>60% Fresnel limit</span></div>
 </div>
 </div>
-<footer>Canopy height: Meta and World Resources Institute (2026), CHMv2, CC BY 4.0, via Source Cooperative (Taylor Geospatial Engine Labs). Elevation: Terrarium tiles (Mapzen / open data). Maps: OpenStreetMap contributors; satellite imagery by Esri (check Esri's terms before any commercial use). Advisory only: a model estimate, not a survey.</footer>
+<footer>Canopy height: Meta and World Resources Institute (2026), CHMv2, CC BY 4.0, via Source Cooperative (Taylor Geospatial Engine Labs). Building heights: Google Open Buildings 2.5D Temporal Dataset (2023), CC BY 4.0, reduced to 4 m. Elevation: Terrarium tiles (Mapzen / open data). Maps: OpenStreetMap contributors; satellite imagery by Esri (check Esri's terms before any commercial use). Advisory only: a model estimate, not a survey.</footer>
 
 <script>
 const $=id=>document.getElementById(id), log=m=>$("log").textContent=m;
@@ -114,25 +114,35 @@ async function canopy(lat,lon,spacing){
  if(w[2]<=w[0]||w[3]<=w[1])return 0;
  const r=await img.readRasters({window:w,samples:[0]});let m=0;for(const v of r[0])if(v>m)m=v;return m} // max, so thin tree lines survive
 
-// ---- optional buildings layer: one or more local GeoTIFF tiles (3-band tile: band 2 = building_height; 1-band clip: band 1)
-let bTiles=[];
-$("bld").onchange=async e=>{const files=[...e.target.files];if(!files.length)return;
+// ---- buildings layer
+// Auto mode: reads buildings_4m/tiles.json (made by process_buildings.py) and fetches only the small tiles a path touches.
+// Manual mode: if you pick GeoTIFF file(s) with the file picker, those are used instead.
+let bTiles=[],bIndex=null;const BB="buildings_4m/",zProj={},tImgs={},PROV=[22.0,-28.8,28.5,-24.0];
+const zp=z=>zProj[z]??=proj4("EPSG:4326",`+proj=utm +zone=${z} +south +datum=WGS84 +units=m +no_defs`);
+fetch(BB+"tiles.json").then(r=>r.ok?r.json():Promise.reject()).then(j=>{bIndex=j.tiles;log(`Buildings: ${bIndex.length} tiles indexed (province-wide, 4 m).`)}).catch(()=>{});
+$("bld").onchange=async e=>{const files=[...e.target.files];if(!files.length){bTiles=[];return}
  try{log(`Opening ${files.length} file(s)...`);const out=[];
   for(const f of files){const img=await(await GeoTIFF.fromBlob(f)).getImage(),code=img.getGeoKeys().ProjectedCSTypeGeoKey;let def;
    if(code>=32701&&code<=32760)def=`+proj=utm +zone=${code-32700} +south +datum=WGS84 +units=m +no_defs`;
    else if(code>=32601&&code<=32660)def=`+proj=utm +zone=${code-32600} +datum=WGS84 +units=m +no_defs`;
    else throw new Error(f.name+": unsupported projection (EPSG "+code+"), expected UTM.");
    out.push({img,proj:proj4("EPSG:4326",def),name:f.name})}
-  bTiles=out;const i=out[0].img;
-  log(`Buildings ready: ${out.length} file(s); first is ${i.getWidth()}x${i.getHeight()} px, ${i.getSamplesPerPixel()} band(s), ${Math.abs(i.getResolution()[0])} m cells.`)}
+  bTiles=out;log(`Manual buildings files in use: ${out.length}. (Clear the picker to go back to the province data.)`)}
  catch(err){bTiles=[];log("Could not use those files: "+err.message)}};
+async function heightAt(img,mx,my,spacing){ // tallest building height near a point, or null if the point is outside this raster
+ const [x0,y0]=img.getOrigin(),[rx,ry]=img.getResolution(),px=(mx-x0)/rx,py=(my-y0)/ry,W=img.getWidth(),H=img.getHeight();
+ if(px<0||py<0||px>=W||py>=H)return null;
+ const half=Math.max(0,Math.floor(spacing/Math.abs(rx)/2)),w=[Math.max(0,Math.floor(px-half)),Math.max(0,Math.floor(py-half)),Math.min(W,Math.floor(px+half)+1),Math.min(H,Math.floor(py+half)+1)];
+ const r=await img.readRasters({window:w,samples:[img.getSamplesPerPixel()>1?1:0]});let m=0;for(const v of r[0])if(v>m&&v<255)m=v; // ignores -99 and 255 no-data
+ return m}
 async function bldAt(lat,lon,spacing){
- let best=null; // null = point is outside every loaded file
- for(const t of bTiles){const img=t.img,[x0,y0]=img.getOrigin(),[rx,ry]=img.getResolution(),[mx,my]=t.proj.forward([lon,lat]),px=(mx-x0)/rx,py=(my-y0)/ry,W=img.getWidth(),H=img.getHeight();
-  if(px<0||py<0||px>=W||py>=H)continue;
-  const half=Math.max(0,Math.ceil(spacing/Math.abs(rx)/2)),w=[Math.max(0,Math.floor(px-half)),Math.max(0,Math.floor(py-half)),Math.min(W,Math.floor(px+half)+1),Math.min(H,Math.floor(py+half)+1)];
-  const r=await img.readRasters({window:w,samples:[img.getSamplesPerPixel()>1?1:0]});let m=0;for(const v of r[0])if(v>m&&v<255)m=v; // ignores -99 and 255 no-data
-  best=Math.max(best??0,m)} // overlapping tiles: take the higher reading
+ let best=null; // null = no data here at all
+ if(bTiles.length){for(const t of bTiles){const [mx,my]=t.proj.forward([lon,lat]),v=await heightAt(t.img,mx,my,spacing);if(v!==null)best=Math.max(best??0,v)}return best}
+ for(const z of[34,35]){const [mx,my]=zp(z).forward([lon,lat]);
+  for(const t of bIndex){if(t.epsg!==32700+z||mx<t.e0||mx>=t.e1||my<t.n0||my>=t.n1)continue;
+   const img=await(tImgs[t.f]??=GeoTIFF.fromUrl(BB+t.f).then(x=>x.getImage())),v=await heightAt(img,mx,my,spacing);
+   if(v!==null)best=Math.max(best??0,v)}} // overlapping tiles: take the higher reading
+ if(best===null&&lon>=PROV[0]&&lon<=PROV[2]&&lat>=PROV[1]&&lat<=PROV[3])best=0; // inside the province box but no tile = empty tile skipped
  return best}
 
 // ---- main check
@@ -148,7 +158,7 @@ $("go").onclick=async()=>{
   try{for(let i=0;i<pts.length;i+=16)await Promise.all(pts.slice(i,i+16).map((p,j)=>canopy(p.lat,p.lon,D/n).then(v=>c[i+j]=v)))}
   catch(e){canopyOk=false;err=e.message;c=c.fill(0)}
   const maxCan=Math.max(...c),cCan=c.slice();let maxB=0,bNote="",bs=null;
-  if(bTiles.length){log("Reading buildings...");try{bs=new Array(pts.length).fill(0);let out=0;
+  if(bTiles.length||bIndex){log("Reading buildings...");try{bs=new Array(pts.length).fill(0);let out=0;
    for(let i=0;i<pts.length;i+=16)await Promise.all(pts.slice(i,i+16).map((p,j)=>bldAt(p.lat,p.lon,D/n).then(v=>{if(v===null)out++;else bs[i+j]=v})));
    maxB=Math.max(...bs);c=c.map((v,i)=>Math.max(v,bs[i]));if(out>pts.length/2)bNote=" (the buildings file covers little of this path)"}
    catch(e){bNote=" (buildings failed: "+e.message+")"}}
@@ -160,7 +170,7 @@ $("go").onclick=async()=>{
    return{d:p.d,g:g[i]+bulge,o:g[i]+c[i]+bulge,cn:cCan[i],b:bs?bs[i]:0,los,r}});
   const pc=x=>x<-1?"below -100%":Math.round(x*100)+"%",cls=best.f>=.8?"green":best.f>=.6?"amber":"red",word={green:"Clear",amber:"Marginal",red:"Blocked / at risk"}[cls];
   const v=$("verdict");v.style.display="block";v.className=cls;
-  v.textContent=canopyOk?`${word}: worst Fresnel clearance ${pc(best.f)} at ${(pts[best.i].d/1000).toFixed(2)} km from tower. Terrain-only result would be ${pc(bestT.f)}. Tallest canopy on path: ${maxCan} m.`+(bTiles.length?` Tallest building: ${maxB} m.${bNote}`:"")
+  v.textContent=canopyOk?`${word}: worst Fresnel clearance ${pc(best.f)} at ${(pts[best.i].d/1000).toFixed(2)} km from tower. Terrain-only result would be ${pc(bestT.f)}. Tallest canopy on path: ${maxCan} m.`+(bTiles.length||bIndex?` Tallest building: ${maxB} m.${bNote}`:"")
    :`Canopy data failed to load, so this is TERRAIN ONLY: worst clearance ${pc(bestT.f)}. (${err})`;
   draw(prof);log(`Done. Terrain-only min clearance ${pc(bestT.f)}; with canopy ${canopyOk?pc(best.f):"n/a"}.`+(canopyOk?"":"\nCanopy error: "+err));
  }catch(e){log("Error: "+e.message)}
